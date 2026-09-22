@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <title>ShelfLife: household expiry and go-bag tracker</title>
     <meta
       name="description"
@@ -23,13 +23,7 @@
       rel="icon"
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232f7d4f'/%3E%3Ccircle cx='16' cy='16' r='6' fill='%23f7fbf8'/%3E%3C/svg%3E"
    >
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link
-      href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
-      rel="stylesheet"
-   >
-    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="css/style.css">
   </head>
   <body>
     <a class="skip-link" href="#tracker">Skip to the tracker</a>
@@ -37,23 +31,34 @@
     <header class="site-header">
       <div class="container header-row">
         <a href="#top" class="brand">ShelfLife</a>
-        <nav class="site-nav" aria-label="Page sections">
-          <ul>
-            <li><a href="#features">Features</a></li>
-            <li><a href="#tracker">Live tracker</a></li>
-            <li><a href="#history-section">History</a></li>
-            <li><a href="#gobag">Go-bag guide</a></li>
-            <li><a href="#calculator">₱ Savings</a></li>
-            <li><a href="#faq">FAQ</a></li>
-          </ul>
-        </nav>
-        <div class="header-actions">
-          <div class="theme-toggle" id="themeToggle" role="group" aria-label="Colour theme">
-            <button type="button" data-theme-value="system" aria-pressed="true" onclick="setTheme('system')">System</button>
-            <button type="button" data-theme-value="light" aria-pressed="false" onclick="setTheme('light')">Light</button>
-            <button type="button" data-theme-value="dark" aria-pressed="false" onclick="setTheme('dark')">Dark</button>
-          </div>
-          <div id="authContainer">
+        <div class="theme-toggle" id="themeToggle" role="group" aria-label="Colour theme">
+          <button type="button" data-theme-value="system" aria-pressed="true" onclick="setTheme('system')">System</button>
+          <button type="button" data-theme-value="light" aria-pressed="false" onclick="setTheme('light')">Light</button>
+          <button type="button" data-theme-value="dark" aria-pressed="false" onclick="setTheme('dark')">Dark</button>
+        </div>
+        <button
+          type="button"
+          class="menu-toggle"
+          id="menuToggle"
+          aria-expanded="false"
+          aria-controls="siteMenu"
+          onclick="toggleMenu()"
+        >
+          <span class="menu-bars" aria-hidden="true"></span>
+          <span class="visually-hidden">Menu</span>
+        </button>
+        <div class="site-menu" id="siteMenu">
+          <nav class="site-nav" aria-label="Page sections">
+            <ul>
+              <li><a href="#features">Features</a></li>
+              <li><a href="#tracker">Live tracker</a></li>
+              <li><a href="#history-section">History</a></li>
+              <li><a href="#gobag">Go-bag guide</a></li>
+              <li><a href="#calculator">₱ Savings</a></li>
+              <li><a href="#faq">FAQ</a></li>
+            </ul>
+          </nav>
+          <div class="header-auth" id="authContainer">
             <button type="button" class="btn btn-secondary btn-sm" onclick="openAuthDialog()">
               Sign in
             </button>
@@ -69,8 +74,8 @@
           <div>
             <h1 id="hero-title">Know what expires next.</h1>
             <p class="hero-lead">
-              Add what's in your kitchen, medicine cabinet, and go-bag. ShelfLife
-              counts down the days and flags what to use first.
+              Track food, medicine, and go-bag supplies. See the days left and
+              what to use first.
             </p>
             <div class="hero-actions">
               <a href="#tracker" class="btn btn-primary btn-lg">Open the live tracker</a>
@@ -80,7 +85,7 @@
           <aside class="next-up" aria-labelledby="next-up-title">
             <div class="next-up-head">
               <h2 id="next-up-title">Expiring next</h2>
-              <span id="nextUpDate"></span>
+              <time id="nextUpDate"></time>
             </div>
             <ol class="next-up-list" id="nextUpList" aria-live="polite"></ol>
             <p class="next-up-foot" id="nextUpFoot"></p>
@@ -94,8 +99,8 @@
           <div class="section-head">
             <h2 id="features-title">One date per item, five statuses</h2>
             <p>
-              Every item gets an expiry or rotation date. ShelfLife recounts the
-              days left each time you open it and sorts the soonest to the top.
+              Each item gets a date. ShelfLife counts the days left and sorts the
+              soonest first.
             </p>
           </div>
 
@@ -111,23 +116,22 @@
             <div>
               <h3>Go-bag rotation</h3>
               <p>
-                Tag emergency supplies as Go-bag. Marking one consumed logs a
-                rotation instead, so you can see when the bag was last refreshed.
+                Tag supplies as Go-bag. Using one logs a rotation, so you know
+                when the bag was last refreshed.
               </p>
             </div>
             <div>
               <h3>History you can undo</h3>
               <p>
-                Consumed, discarded, and removed items are logged separately.
-                Restore anything from the history, or undo straight from the
-                confirmation.
+                Every action is logged. Restore from the history, or undo right
+                from the confirmation.
               </p>
             </div>
             <div>
               <h3>Saved on this device</h3>
               <p>
-                Items and history live in this browser's storage. Accounts and
-                sync across devices are planned for a later version.
+                Items and history stay in this browser. Accounts and sync come
+                in a later version.
               </p>
             </div>
           </div>
@@ -140,8 +144,8 @@
           <div class="section-head">
             <h2 id="tracker-title">Live tracker</h2>
             <p>
-              Add, search, and sort what you own. Mark items consumed, discard
-              what spoiled, or remove mistakes.
+              Add, search, and sort your items. Mark them consumed, discard, or
+              remove.
             </p>
           </div>
 
@@ -216,7 +220,7 @@
                 <button type="submit" class="btn btn-primary">Save item</button>
               </form>
 
-              <div class="rows" id="itemsContainer" aria-live="polite"></div>
+              <ul class="rows" id="itemsContainer" aria-live="polite"></ul>
             </div>
 
             <div class="panel-foot">
@@ -236,8 +240,8 @@
           <div class="section-head">
             <h2 id="history-title">History</h2>
             <p>
-              Everything you consumed, rotated, discarded, or removed, with the
-              option to restore it.
+              Everything consumed, rotated, discarded, or removed. Restore any
+              entry.
             </p>
           </div>
 
@@ -256,7 +260,7 @@
                 <button type="button" class="chip" aria-pressed="false" onclick="setHistoryFilter('Discarded', this)">Discarded</button>
                 <button type="button" class="chip" aria-pressed="false" onclick="setHistoryFilter('Removed', this)">Removed</button>
               </div>
-              <div class="rows" id="historyContainer" aria-live="polite"></div>
+              <ul class="rows" id="historyContainer" aria-live="polite"></ul>
             </div>
           </div>
         </div>
@@ -270,13 +274,11 @@
               <h2 id="gobag-title">72-hour go-bag checklist</h2>
               <p>
                 In a fire, flood, or earthquake you have minutes to leave. Keep
-                these packed, and rotate food, water, and medicine every six
-                months.
+                these packed and rotate them every six months.
               </p>
             </div>
             <p>
-              Add each one to the tracker under Go-bag with its rotation date,
-              and the countdown does the reminding.
+              Add them to the tracker under Go-bag with a rotation date.
             </p>
           </div>
 
@@ -318,8 +320,8 @@
           <div class="section-head">
             <h2 id="calc-title">Household savings estimate</h2>
             <p>
-              A rough estimate, in Philippine pesos, of what a household saves by
-              using food before it expires.
+              A rough estimate of what a household saves by using food before it
+              expires.
             </p>
           </div>
 
@@ -347,12 +349,11 @@
             </div>
             <div>
               <div class="figure-n" id="wasteDivertedVal">144 kg</div>
-              <div class="figure-l">of food kept out of the bin per year</div>
+              <div class="figure-l">food waste avoided per year</div>
             </div>
             <p class="calc-note">
               Assumes 18% of grocery spend is lost to expired food and 48 kg of
-              avoidable food waste per person per year. These are illustrative
-              figures for this prototype, not measurements.
+              avoidable waste per person per year. Illustrative only.
             </p>
           </div>
         </div>
@@ -368,25 +369,22 @@
             <div class="faq-item">
               <h3>How does the history work?</h3>
               <p>
-                When you mark an item consumed, discard it, or remove it,
-                ShelfLife moves it to the history with the action and the time.
-                You can filter the log or restore any entry to the active list.
+                Consumed, discarded, and removed items move to the history with
+                the action and time. Filter the log or restore any entry.
               </p>
             </div>
             <div class="faq-item">
               <h3>How often should I rotate the go-bag?</h3>
               <p>
-                Every six months for food, water treatment, and medicine is the
-                common guidance. Give each item a rotation date when you add it
-                and the countdown handles the reminder.
+                Every six months for food, water treatment, and medicine. Give
+                each item a rotation date and the countdown reminds you.
               </p>
             </div>
             <div class="faq-item">
               <h3>Do my items survive a refresh or a closed tab?</h3>
               <p>
-                Yes. Items and history are stored in this browser with
-                localStorage. Clearing site data removes them, and they do not
-                sync to other devices yet.
+                Yes. They are stored in this browser. Clearing site data removes
+                them, and they do not sync to other devices yet.
               </p>
             </div>
           </div>
@@ -400,8 +398,8 @@
           <div class="footer-brand">
             <a href="#top" class="brand">ShelfLife</a>
             <p>
-              Expiry tracking for the kitchen and the go-bag. Data
-              stays in this browser.
+              Expiry tracking for the kitchen and the go-bag. Data stays in this
+              browser.
             </p>
           </div>
           <nav class="footer-nav" aria-label="Footer">
@@ -430,8 +428,8 @@
       </div>
       <form class="dialog-body" onsubmit="handleAuthSubmit(event)">
         <p>
-          This prototype has no account server yet. Your email is kept only in
-          this browser so you can preview the signed-in view.
+          No account server yet. Your email stays in this browser to preview
+          the signed-in view.
         </p>
         <div class="field">
           <label for="authEmailInput">Email</label>
@@ -443,6 +441,6 @@
 
     <div class="toast-region" id="toastContainer" aria-live="polite"></div>
 
-    <script src="index.js"></script>
+    <script src="js/index.js"></script>
   </body>
 </html>
