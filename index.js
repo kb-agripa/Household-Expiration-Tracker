@@ -1,632 +1,446 @@
-/* ShelfLife prototype logic. Vanilla JS, no build step.
-   State lives in memory and is written to localStorage on every change.
-   Functions are global because the markup calls them from inline handlers. */
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>ShelfLife: household expiry and go-bag tracker</title>
+    <meta
+      name="description"
+      content="Track expiry dates for groceries, medicine, and emergency go-bag supplies. ShelfLife counts down the days and shows what to use, rotate, or discard first. Data stays in your browser."
+   >
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f5f6f6">
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#15171a">
+    <script>
+      // Apply a saved theme before first paint. The control lives in the header.
+      try {
+        var savedTheme = localStorage.getItem("shelflife_theme");
+        if (savedTheme === "light" || savedTheme === "dark") {
+          document.documentElement.dataset.theme = savedTheme;
+        }
+      } catch (e) {}
+    </script>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232f7d4f'/%3E%3Ccircle cx='16' cy='16' r='6' fill='%23f7fbf8'/%3E%3C/svg%3E"
+   >
+    <link rel="stylesheet" href="css/style.css">
+  </head>
+  <body>
+    <a class="skip-link" href="#tracker">Skip to the tracker</a>
 
-const STORAGE_KEY = "shelflife_items_v2";
-const HISTORY_KEY = "shelflife_history_v2";
-const AUTH_KEY = "shelflife_auth_user";
-const THEME_KEY = "shelflife_theme";
-
-const CATEGORIES = {
-  fridge: "Fridge",
-  pantry: "Pantry",
-  medicine: "Medicine",
-  cosmetics: "Cosmetics",
-  gobag: "Go-bag",
-};
-
-/* History actions and the status colour each one borrows. */
-const ACTION_TIER = {
-  Consumed: "good",
-  Rotated: "good",
-  Discarded: "critical",
-  Removed: "expired",
-};
-
-let currentCategory = "all";
-let currentHistoryFilter = "all";
-let currentAuthUser = readJSON(AUTH_KEY, null);
-let undoSnapshot = null;
-
-/* ---------- Dates. The app is date-only and works in local time. ---------- */
-
-function toISODate(d) {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
-function isoDaysFromNow(offset) {
-  const d = new Date();
-  d.setDate(d.getDate() + offset);
-  return toISODate(d);
-}
-
-function hoursAgo(h) {
-  return new Date(Date.now() - h * 3600000).toISOString();
-}
-
-function daysUntil(dateStr) {
-  const [y, m, d] = String(dateStr).split("-").map(Number);
-  const target = new Date(y, m - 1, d);
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  return Math.round((target - today) / 86400000);
-}
-
-/* Status tiers: Expired (< 0), Use today (0), Urgent (1 to 3), Soon (4 to 7), Good (8+) */
-function tierFor(days) {
-  if (days < 0) return { tier: "expired", label: "Expired" };
-  if (days === 0) return { tier: "critical", label: "Use today" };
-  if (days <= 3) return { tier: "urgent", label: "Urgent" };
-  if (days <= 7) return { tier: "soon", label: "Soon" };
-  return { tier: "good", label: "Good" };
-}
-
-/* ---------- Demo data ---------- */
-
-function sampleItems() {
-  return [
-    { id: "1", name: "Water purification tablets (50 pack)", category: "gobag", date: isoDaysFromNow(180) },
-    { id: "2", name: "Canned tuna in oil", category: "gobag", date: isoDaysFromNow(5) },
-    { id: "3", name: "Fresh whole milk, 1 L", category: "fridge", date: isoDaysFromNow(2) },
-    { id: "4", name: "Sourdough loaf", category: "pantry", date: isoDaysFromNow(0) },
-    { id: "5", name: "Greek yogurt cup", category: "fridge", date: isoDaysFromNow(-2) },
-    { id: "6", name: "Flashlight batteries (AA)", category: "gobag", date: isoDaysFromNow(90) },
-  ];
-}
-
-function sampleHistory() {
-  return [
-    { id: "h1", name: "Wheat bread", category: "pantry", date: isoDaysFromNow(-4), action: "Consumed", note: "", loggedAt: hoursAgo(26) },
-    { id: "h2", name: "Cheddar cheese", category: "fridge", date: isoDaysFromNow(-8), action: "Discarded", note: "expired", loggedAt: hoursAgo(5 * 24 + 3) },
-    { id: "h3", name: "Duplicate milk entry", category: "fridge", date: isoDaysFromNow(3), action: "Removed", note: "", loggedAt: hoursAgo(6 * 24 + 7) },
-  ];
-}
-
-/* ---------- Storage ---------- */
-
-function readJSON(key, fallback) {
-  try {
-    const raw = localStorage.getItem(key);
-    return raw ? JSON.parse(raw) : fallback;
-  } catch (e) {
-    console.error(e);
-    return fallback;
-  }
-}
-
-let items = readJSON(STORAGE_KEY, null) || sampleItems();
-let history = readJSON(HISTORY_KEY, null) || sampleHistory();
-
-function persist() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
-  localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
-  renderAll();
-}
-
-/* Every destructive action snapshots both lists first so the toast can undo it. */
-function snapshot() {
-  undoSnapshot = { items: items.slice(), history: history.slice() };
-}
-
-function undo() {
-  if (!undoSnapshot) return;
-  items = undoSnapshot.items;
-  history = undoSnapshot.history;
-  undoSnapshot = null;
-  persist();
-  showToast("Undone");
-}
-
-function newId() {
-  return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-}
-
-/* ---------- Rendering ---------- */
-
-function renderAll() {
-  renderNextUp();
-  renderItems();
-  renderHistory();
-}
-
-function daysMarkup(days) {
-  const n = Math.abs(days);
-  const unit = n === 1 ? "day" : "days";
-  const suffix = days < 0 ? "ago" : "left";
-  return `<div class="days"><span class="days-n">${n}</span><span class="days-l">${unit} ${suffix}</span></div>`;
-}
-
-function emptyMarkup(title, body) {
-  return `<div class="empty"><strong>${title}</strong><span>${body}</span></div>`;
-}
-
-function countLabel(n, singular, plural) {
-  return `${n} ${n === 1 ? singular : plural}`;
-}
-
-/* Hero panel: the three items with the fewest days left. */
-function renderNextUp() {
-  const list = document.getElementById("nextUpList");
-  const foot = document.getElementById("nextUpFoot");
-  const dateEl = document.getElementById("nextUpDate");
-  if (!list) return;
-
-  if (dateEl) {
-    dateEl.textContent = new Date().toLocaleDateString("en-PH", { month: "short", day: "numeric" });
-  }
-
-  const soonest = items
-    .map((item) => ({ ...item, days: daysUntil(item.date) }))
-    .sort((a, b) => a.days - b.days)
-    .slice(0, 3);
-
-  if (soonest.length === 0) {
-    list.innerHTML = `<li class="next-up-empty">Nothing tracked yet. Add your first item in the tracker.</li>`;
-    if (foot) foot.textContent = "";
-    return;
-  }
-
-  list.innerHTML = soonest
-    .map((item) => {
-      const status = tierFor(item.days);
-      return `
-        <li class="tier-${status.tier}">
-          ${daysMarkup(item.days)}
-          <div class="row-main">
-            <div class="row-name">${escapeHtml(item.name)}</div>
-            <div class="row-meta">
-              <span>${categoryLabel(item.category)}</span>
-              <span class="badge">${status.label}</span>
-            </div>
+    <header class="site-header">
+      <div class="container header-row">
+        <a href="#top" class="brand">ShelfLife</a>
+        <div class="theme-toggle" id="themeToggle" role="group" aria-label="Colour theme">
+          <button type="button" data-theme-value="system" aria-pressed="true" onclick="setTheme('system')">System</button>
+          <button type="button" data-theme-value="light" aria-pressed="false" onclick="setTheme('light')">Light</button>
+          <button type="button" data-theme-value="dark" aria-pressed="false" onclick="setTheme('dark')">Dark</button>
+        </div>
+        <button
+          type="button"
+          class="menu-toggle"
+          id="menuToggle"
+          aria-expanded="false"
+          aria-controls="siteMenu"
+          onclick="toggleMenu()"
+        >
+          <span class="menu-bars" aria-hidden="true"></span>
+          <span class="visually-hidden">Menu</span>
+        </button>
+        <div class="site-menu" id="siteMenu">
+          <nav class="site-nav" aria-label="Page sections">
+            <ul>
+              <li><a href="#features">Features</a></li>
+              <li><a href="#tracker">Live tracker</a></li>
+              <li><a href="#history-section">History</a></li>
+              <li><a href="#gobag">Go-bag guide</a></li>
+              <li><a href="#calculator">₱ Savings</a></li>
+              <li><a href="#faq">FAQ</a></li>
+            </ul>
+          </nav>
+          <div class="header-auth" id="authContainer">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="openAuthDialog()">
+              Sign in
+            </button>
           </div>
-        </li>`;
-    })
-    .join("");
-
-  if (foot) foot.textContent = `${countLabel(items.length, "item", "items")} tracked in this browser`;
-}
-
-function renderItems() {
-  const container = document.getElementById("itemsContainer");
-  if (!container) return;
-
-  const search = (document.getElementById("searchInput")?.value || "").trim().toLowerCase();
-  const sortBy = document.getElementById("sortSelect")?.value || "urgency";
-
-  const visible = items
-    .map((item) => ({ ...item, days: daysUntil(item.date) }))
-    .filter((item) => {
-      if (search && !item.name.toLowerCase().includes(search)) return false;
-      if (currentCategory === "all") return true;
-      if (currentCategory === "critical") return item.days <= 3;
-      return item.category === currentCategory;
-    })
-    .sort((a, b) => {
-      if (sortBy === "name") return a.name.localeCompare(b.name);
-      if (sortBy === "category") return a.category.localeCompare(b.category) || a.days - b.days;
-      return a.days - b.days;
-    });
-
-  if (visible.length === 0) {
-    container.innerHTML =
-      items.length === 0
-        ? emptyMarkup("Nothing tracked yet", "Add your first item with the button above.")
-        : emptyMarkup("No items match", "Try another category or clear the search.");
-  } else {
-    container.innerHTML = visible.map(itemRow).join("");
-  }
-
-  const summary = document.getElementById("itemsSummaryCount");
-  if (summary) {
-    const shown = visible.length !== items.length ? `, ${visible.length} shown` : "";
-    summary.textContent = countLabel(items.length, "item", "items") + shown;
-  }
-}
-
-function itemRow(item) {
-  const status = tierFor(item.days);
-  const isGoBag = item.category === "gobag";
-  return `
-    <div class="row tier-${status.tier}">
-      ${daysMarkup(item.days)}
-      <div class="row-main">
-        <div class="row-name">${escapeHtml(item.name)}</div>
-        <div class="row-meta">
-          <span class="${isGoBag ? "tag" : ""}">${categoryLabel(item.category)}</span>
-          <span class="stamp">EXP ${escapeHtml(item.date)}</span>
-          <span class="badge">${status.label}</span>
         </div>
       </div>
-      <div class="row-actions">
-        <button type="button" class="btn btn-secondary btn-sm" onclick="consumeItem('${item.id}')">
-          ${isGoBag ? "Mark rotated" : "Mark consumed"}
-        </button>
-        <button type="button" class="btn btn-quiet btn-sm" onclick="discardItem('${item.id}')">Discard</button>
-        <button type="button" class="btn btn-quiet btn-sm" onclick="removeItem('${item.id}')">Remove</button>
-      </div>
-    </div>`;
-}
+    </header>
 
-/* Reads a history record's action. Older records stored the note inside the
-   action string, for example "Discarded (Expired)" or "Deleted". */
-function actionParts(record) {
-  const match = /^(\w+)\s*(?:\((.*)\))?$/.exec(record.action || "") || [];
-  let verb = match[1] || "Removed";
-  if (verb === "Deleted") verb = "Removed";
-
-  let note = record.note || "";
-  if (!note && match[2]) {
-    const legacy = match[2].toLowerCase();
-    if (legacy === "expired") note = "expired";
-    if (legacy === "waste") note = "before expiry";
-  }
-  return { verb, note, tier: ACTION_TIER[verb] || "expired" };
-}
-
-function matchesHistoryFilter(record) {
-  if (currentHistoryFilter === "all") return true;
-  const { verb } = actionParts(record);
-  if (currentHistoryFilter === "Consumed") return verb === "Consumed" || verb === "Rotated";
-  return verb === currentHistoryFilter;
-}
-
-function formatLogged(record) {
-  if (record.loggedAt) {
-    const d = new Date(record.loggedAt);
-    if (!Number.isNaN(d.getTime())) {
-      return d.toLocaleString("en-PH", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
-    }
-  }
-  return record.timestamp || "";
-}
-
-function renderHistory() {
-  const container = document.getElementById("historyContainer");
-  const count = document.getElementById("historyCountBadge");
-  if (count) count.textContent = countLabel(history.length, "record", "records");
-  if (!container) return;
-
-  const visible = history.filter(matchesHistoryFilter);
-
-  if (visible.length === 0) {
-    container.innerHTML =
-      history.length === 0
-        ? emptyMarkup("No history yet", "Items you consume, discard, or remove will be logged here.")
-        : emptyMarkup("Nothing in this filter", "Choose another filter to see more of the log.");
-    return;
-  }
-
-  container.innerHTML = visible
-    .map((record) => {
-      const { verb, note, tier } = actionParts(record);
-      return `
-        <div class="row row-log tier-${tier}">
-          <div class="row-main">
-            <div class="row-name">${escapeHtml(record.name)}</div>
-            <div class="row-meta">
-              <span>${categoryLabel(record.category)}</span>
-              <span>Logged ${escapeHtml(formatLogged(record))}</span>
+    <main id="top">
+      <!-- Hero: headline plus a live panel fed by the same data as the tracker -->
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="container hero-grid">
+          <div>
+            <h1 id="hero-title">Know what expires next.</h1>
+            <p class="hero-lead">
+              Track food, medicine, and go-bag supplies. See the days left and
+              what to use first.
+            </p>
+            <div class="hero-actions">
+              <a href="#tracker" class="btn btn-primary btn-lg">Open the live tracker</a>
+              <a href="#gobag" class="btn btn-secondary btn-lg">Read the go-bag guide</a>
             </div>
           </div>
-          <div class="row-actions">
-            <span class="badge">${verb}${note ? `, ${note}` : ""}</span>
-            <button type="button" class="btn btn-quiet btn-sm" onclick="restoreFromHistory('${record.id}')">Restore</button>
+          <aside class="next-up" aria-labelledby="next-up-title">
+            <div class="next-up-head">
+              <h2 id="next-up-title">Expiring next</h2>
+              <time id="nextUpDate"></time>
+            </div>
+            <ol class="next-up-list" id="nextUpList" aria-live="polite"></ol>
+            <p class="next-up-foot" id="nextUpFoot"></p>
+          </aside>
+        </div>
+      </section>
+
+      <!-- Features: the status scale is the product's core rule -->
+      <section class="section" id="features" aria-labelledby="features-title">
+        <div class="container">
+          <div class="section-head">
+            <h2 id="features-title">One date per item, five statuses</h2>
+            <p>
+              Each item gets a date. ShelfLife counts the days left and sorts the
+              soonest first.
+            </p>
           </div>
-        </div>`;
-    })
-    .join("");
-}
 
-/* ---------- Item actions ---------- */
+          <ol class="scale" aria-label="Status scale from good to expired">
+            <li class="scale-step tier-good"><strong>Good</strong><span>8 or more days left</span></li>
+            <li class="scale-step tier-soon"><strong>Soon</strong><span>4 to 7 days left</span></li>
+            <li class="scale-step tier-urgent"><strong>Urgent</strong><span>1 to 3 days left</span></li>
+            <li class="scale-step tier-critical"><strong>Use today</strong><span>0 days left</span></li>
+            <li class="scale-step tier-expired"><strong>Expired</strong><span>past the date</span></li>
+          </ol>
 
-function logRecord(item, action, note) {
-  return {
-    id: "h_" + newId(),
-    name: item.name,
-    category: item.category,
-    date: item.date,
-    action,
-    note: note || "",
-    loggedAt: new Date().toISOString(),
-  };
-}
+          <div class="facts">
+            <div>
+              <h3>Go-bag rotation</h3>
+              <p>
+                Tag supplies as Go-bag. Using one logs a rotation, so you know
+                when the bag was last refreshed.
+              </p>
+            </div>
+            <div>
+              <h3>History you can undo</h3>
+              <p>
+                Every action is logged. Restore from the history, or undo right
+                from the confirmation.
+              </p>
+            </div>
+            <div>
+              <h3>Saved on this device</h3>
+              <p>
+                Items and history stay in this browser. Accounts and sync come
+                in a later version.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
 
-function archiveItem(id, action, note, toastText) {
-  const idx = items.findIndex((item) => item.id === id);
-  if (idx === -1) return;
-  const item = items[idx];
-  snapshot();
-  items.splice(idx, 1);
-  history.unshift(logRecord(item, action, note));
-  persist();
-  showToast(toastText, { canUndo: true });
-}
+      <!-- Live tracker -->
+      <section class="section section-tinted" id="tracker" aria-labelledby="tracker-title">
+        <div class="container tracker-wrap">
+          <div class="section-head">
+            <h2 id="tracker-title">Live tracker</h2>
+            <p>
+              Add, search, and sort your items. Mark them consumed, discard, or
+              remove.
+            </p>
+          </div>
 
-function consumeItem(id) {
-  const item = items.find((entry) => entry.id === id);
-  if (!item) return;
-  const rotated = item.category === "gobag";
-  archiveItem(id, rotated ? "Rotated" : "Consumed", "", `${rotated ? "Marked rotated" : "Marked consumed"}: ${item.name}`);
-}
+          <div class="panel">
+            <div class="panel-head">
+              <h3>Active items</h3>
+              <span class="panel-note">Saved in this browser</span>
+            </div>
 
-function discardItem(id) {
-  const item = items.find((entry) => entry.id === id);
-  if (!item) return;
-  const expired = daysUntil(item.date) < 0;
-  archiveItem(id, "Discarded", expired ? "expired" : "before expiry", `Discarded: ${item.name}`);
-}
+            <div class="panel-body">
+              <div class="toolbar">
+                <div class="field">
+                  <label for="searchInput" class="visually-hidden">Search items</label>
+                  <input
+                    type="search"
+                    id="searchInput"
+                    placeholder="Search items"
+                    autocomplete="off"
+                    oninput="renderItems()"
+                 >
+                </div>
+                <div class="field">
+                  <label for="sortSelect" class="visually-hidden">Sort items</label>
+                  <select id="sortSelect" onchange="renderItems()">
+                    <option value="urgency">Sort: soonest first</option>
+                    <option value="name">Sort: name A to Z</option>
+                    <option value="category">Sort: category</option>
+                  </select>
+                </div>
+              </div>
 
-function removeItem(id) {
-  const item = items.find((entry) => entry.id === id);
-  if (!item) return;
-  archiveItem(id, "Removed", "", `Removed: ${item.name}`);
-}
+              <div class="chips" role="group" aria-label="Filter by category">
+                <button type="button" class="chip" aria-pressed="true" onclick="setCategoryFilter('all', this)">All items</button>
+                <button type="button" class="chip" aria-pressed="false" onclick="setCategoryFilter('critical', this)">Needs attention</button>
+                <button type="button" class="chip" aria-pressed="false" onclick="setCategoryFilter('gobag', this)">Go-bag</button>
+                <button type="button" class="chip" aria-pressed="false" onclick="setCategoryFilter('fridge', this)">Fridge</button>
+                <button type="button" class="chip" aria-pressed="false" onclick="setCategoryFilter('pantry', this)">Pantry</button>
+                <button type="button" class="chip" aria-pressed="false" onclick="setCategoryFilter('medicine', this)">Medicine</button>
+                <button type="button" class="chip" aria-pressed="false" onclick="setCategoryFilter('cosmetics', this)">Cosmetics</button>
+              </div>
 
-function clearExpired() {
-  const expired = items.filter((item) => daysUntil(item.date) < 0);
-  if (expired.length === 0) {
-    showToast("No expired items to discard");
-    return;
-  }
-  snapshot();
-  const records = expired.map((item) => logRecord(item, "Discarded", "expired"));
-  items = items.filter((item) => daysUntil(item.date) >= 0);
-  history = records.concat(history);
-  persist();
-  showToast(`Discarded ${countLabel(expired.length, "expired item", "expired items")}`, { canUndo: true });
-}
+              <button
+                type="button"
+                class="btn btn-secondary"
+                id="addToggle"
+                aria-expanded="false"
+                aria-controls="addItemForm"
+                onclick="toggleAddForm()"
+              >
+                Add an item
+              </button>
 
-function restoreFromHistory(historyId) {
-  const idx = history.findIndex((record) => record.id === historyId);
-  if (idx === -1) return;
-  const record = history[idx];
-  snapshot();
-  items.unshift({
-    id: newId(),
-    name: record.name,
-    category: record.category,
-    date: record.date || isoDaysFromNow(7),
-  });
-  history.splice(idx, 1);
-  persist();
-  showToast(`Restored: ${record.name}`, { canUndo: true });
-}
+              <form id="addItemForm" class="add-form" hidden onsubmit="handleAddItem(event)">
+                <div class="field field-name">
+                  <label for="itemNameInput">Item name</label>
+                  <input type="text" id="itemNameInput" placeholder="Canned tuna" maxlength="80" required>
+                </div>
+                <div class="field">
+                  <label for="itemCategorySelect">Category</label>
+                  <select id="itemCategorySelect">
+                    <option value="fridge">Fridge</option>
+                    <option value="pantry">Pantry</option>
+                    <option value="medicine">Medicine</option>
+                    <option value="cosmetics">Cosmetics</option>
+                    <option value="gobag">Go-bag</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="itemDateInput">Expiry or rotation date</label>
+                  <input type="date" id="itemDateInput" required>
+                </div>
+                <button type="submit" class="btn btn-primary">Save item</button>
+              </form>
 
-function clearHistory() {
-  if (history.length === 0) {
-    showToast("History is already empty");
-    return;
-  }
-  snapshot();
-  history = [];
-  persist();
-  showToast("History cleared", { canUndo: true });
-}
+              <ul class="rows" id="itemsContainer" aria-live="polite"></ul>
+            </div>
 
-function seedSampleData() {
-  snapshot();
-  items = sampleItems();
-  persist();
-  showToast("Demo items restored", { canUndo: true });
-}
+            <div class="panel-foot">
+              <span id="itemsSummaryCount">0 items</span>
+              <div class="panel-foot-actions">
+                <button type="button" class="btn btn-quiet btn-sm" onclick="clearExpired()">Discard all expired</button>
+                <button type="button" class="btn btn-quiet btn-sm" onclick="seedSampleData()">Reset demo data</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
 
-/* ---------- Add item form ---------- */
+      <!-- History -->
+      <section class="section" id="history-section" aria-labelledby="history-title">
+        <div class="container tracker-wrap">
+          <div class="section-head">
+            <h2 id="history-title">History</h2>
+            <p>
+              Everything consumed, rotated, discarded, or removed. Restore any
+              entry.
+            </p>
+          </div>
 
-function handleAddItem(e) {
-  e.preventDefault();
-  const name = document.getElementById("itemNameInput").value.trim();
-  const category = document.getElementById("itemCategorySelect").value;
-  const date = document.getElementById("itemDateInput").value;
-  if (!name || !date) return;
+          <div class="panel panel-flat">
+            <div class="panel-head">
+              <h3>Log</h3>
+              <div class="panel-head-actions">
+                <span class="panel-note" id="historyCountBadge">0 records</span>
+                <button type="button" class="btn btn-quiet btn-sm" onclick="clearHistory()">Clear history</button>
+              </div>
+            </div>
+            <div class="panel-body">
+              <div class="chips" role="group" aria-label="Filter history">
+                <button type="button" class="chip" aria-pressed="true" onclick="setHistoryFilter('all', this)">All</button>
+                <button type="button" class="chip" aria-pressed="false" onclick="setHistoryFilter('Consumed', this)">Consumed and rotated</button>
+                <button type="button" class="chip" aria-pressed="false" onclick="setHistoryFilter('Discarded', this)">Discarded</button>
+                <button type="button" class="chip" aria-pressed="false" onclick="setHistoryFilter('Removed', this)">Removed</button>
+              </div>
+              <ul class="rows" id="historyContainer" aria-live="polite"></ul>
+            </div>
+          </div>
+        </div>
+      </section>
 
-  items.unshift({ id: newId(), name, category, date });
-  persist();
-  e.target.reset();
-  setDefaultDate();
-  toggleAddForm(false);
-  showToast(`Added: ${name}`);
-}
+      <!-- Go-bag checklist -->
+      <section class="section section-tinted" id="gobag" aria-labelledby="gobag-title">
+        <div class="container gobag-grid">
+          <div class="gobag-intro">
+            <div class="section-head">
+              <h2 id="gobag-title">72-hour go-bag checklist</h2>
+              <p>
+                In a fire, flood, or earthquake you have minutes to leave. Keep
+                these packed and rotate them every six months.
+              </p>
+            </div>
+            <p>
+              Add them to the tracker under Go-bag with a rotation date.
+            </p>
+          </div>
 
-function toggleAddForm(force) {
-  const form = document.getElementById("addItemForm");
-  const toggle = document.getElementById("addToggle");
-  if (!form || !toggle) return;
-  const open = typeof force === "boolean" ? force : form.hidden;
-  form.hidden = !open;
-  toggle.setAttribute("aria-expanded", String(open));
-  if (open) document.getElementById("itemNameInput").focus();
-}
+          <div class="kit">
+            <div class="kit-group">
+              <h3>Food and water</h3>
+              <ul>
+                <li>4 to 5 liters of drinking water per person</li>
+                <li>Ready-to-eat canned goods: tuna, corned beef, beans</li>
+                <li>High-calorie energy bars, crackers, and biscuits</li>
+                <li>Manual can opener and durable utensils</li>
+              </ul>
+            </div>
+            <div class="kit-group">
+              <h3>Medical and sanitation</h3>
+              <ul>
+                <li>Prescription medicines, a 7-day supply</li>
+                <li>First-aid kit: gauze, antiseptic, burn ointment</li>
+                <li>Water purification tablets or drops</li>
+                <li>N95 masks for smoke and debris</li>
+              </ul>
+            </div>
+            <div class="kit-group">
+              <h3>Light, signal, and documents</h3>
+              <ul>
+                <li>LED flashlight and spare batteries</li>
+                <li>Whistle to signal rescuers</li>
+                <li>Waterproof pouch with IDs, deeds, and cash</li>
+                <li>Power bank, cable, and hand-crank radio</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </section>
 
-function setDefaultDate() {
-  const input = document.getElementById("itemDateInput");
-  if (!input) return;
-  input.value = isoDaysFromNow(7);
-}
+      <!-- Savings estimate -->
+      <section class="section" id="calculator" aria-labelledby="calc-title">
+        <div class="container calc">
+          <div class="section-head">
+            <h2 id="calc-title">Household savings estimate</h2>
+            <p>
+              A rough estimate of what a household saves by using food before it
+              expires.
+            </p>
+          </div>
 
-/* ---------- Filters ---------- */
+          <div class="calc-controls">
+            <div class="calc-row">
+              <div class="calc-row-head">
+                <label for="familySizeSlider">Household size</label>
+                <output id="familySizeLabel" for="familySizeSlider">3 people</output>
+              </div>
+              <input type="range" id="familySizeSlider" min="1" max="8" value="3" oninput="updateCalculator()">
+            </div>
+            <div class="calc-row">
+              <div class="calc-row-head">
+                <label for="spendSlider">Weekly grocery spend</label>
+                <output id="spendLabel" for="spendSlider">₱4,500</output>
+              </div>
+              <input type="range" id="spendSlider" min="1000" max="25000" step="250" value="4500" oninput="updateCalculator()">
+            </div>
+          </div>
 
-function pressOnly(btn) {
-  btn.parentElement.querySelectorAll(".chip").forEach((chip) => {
-    chip.setAttribute("aria-pressed", String(chip === btn));
-  });
-}
+          <div class="calc-results">
+            <div>
+              <div class="figure-n" id="annualSavingsVal">₱42,120</div>
+              <div class="figure-l">saved per year</div>
+            </div>
+            <div>
+              <div class="figure-n" id="wasteDivertedVal">144 kg</div>
+              <div class="figure-l">food waste avoided per year</div>
+            </div>
+            <p class="calc-note">
+              Assumes 18% of grocery spend is lost to expired food and 48 kg of
+              avoidable waste per person per year. Illustrative only.
+            </p>
+          </div>
+        </div>
+      </section>
 
-function setCategoryFilter(category, btn) {
-  currentCategory = category;
-  pressOnly(btn);
-  renderItems();
-}
+      <!-- Questions -->
+      <section class="section" id="faq" aria-labelledby="faq-title">
+        <div class="container">
+          <div class="section-head">
+            <h2 id="faq-title">Common questions</h2>
+          </div>
+          <div class="faq-list">
+            <div class="faq-item">
+              <h3>How does the history work?</h3>
+              <p>
+                Consumed, discarded, and removed items move to the history with
+                the action and time. Filter the log or restore any entry.
+              </p>
+            </div>
+            <div class="faq-item">
+              <h3>How often should I rotate the go-bag?</h3>
+              <p>
+                Every six months for food, water treatment, and medicine. Give
+                each item a rotation date and the countdown reminds you.
+              </p>
+            </div>
+            <div class="faq-item">
+              <h3>Do my items survive a refresh or a closed tab?</h3>
+              <p>
+                Yes. They are stored in this browser. Clearing site data removes
+                them, and they do not sync to other devices yet.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
 
-function setHistoryFilter(filter, btn) {
-  currentHistoryFilter = filter;
-  pressOnly(btn);
-  renderHistory();
-}
+    <footer class="site-footer">
+      <div class="container">
+        <div class="footer-row">
+          <div class="footer-brand">
+            <a href="#top" class="brand">ShelfLife</a>
+            <p>
+              Expiry tracking for the kitchen and the go-bag. Data stays in this
+              browser.
+            </p>
+          </div>
+          <nav class="footer-nav" aria-label="Footer">
+            <ul>
+              <li><a href="#features">Features</a></li>
+              <li><a href="#tracker">Live tracker</a></li>
+              <li><a href="#history-section">History</a></li>
+              <li><a href="#gobag">Go-bag guide</a></li>
+              <li><a href="#calculator">₱ Savings</a></li>
+              <li><a href="#faq">FAQ</a></li>
+            </ul>
+          </nav>
+        </div>
+        <div class="footer-meta">
+          <span>© 2026 ShelfLife</span>
+          <span>Amounts shown in Philippine pesos (₱)</span>
+        </div>
+      </div>
+    </footer>
 
-/* ---------- Savings estimate (Philippine pesos) ---------- */
+    <!-- Demo sign-in: no server yet, the email is kept in this browser only -->
+    <dialog id="authDialog" class="dialog" aria-labelledby="auth-title">
+      <div class="dialog-head">
+        <h2 id="auth-title">Sign in (demo)</h2>
+        <button type="button" class="icon-btn" aria-label="Close" onclick="closeAuthDialog()">✕</button>
+      </div>
+      <form class="dialog-body" onsubmit="handleAuthSubmit(event)">
+        <p>
+          No account server yet. Your email stays in this browser to preview
+          the signed-in view.
+        </p>
+        <div class="field">
+          <label for="authEmailInput">Email</label>
+          <input type="email" id="authEmailInput" placeholder="name@example.com" autocomplete="email" required>
+        </div>
+        <button type="submit" class="btn btn-primary">Continue</button>
+      </form>
+    </dialog>
 
-function updateCalculator() {
-  const familySlider = document.getElementById("familySizeSlider");
-  const spendSlider = document.getElementById("spendSlider");
-  if (!familySlider || !spendSlider) return;
+    <div class="toast-region" id="toastContainer" aria-live="polite"></div>
 
-  const familySize = Number(familySlider.value);
-  const weeklySpend = Number(spendSlider.value);
-
-  document.getElementById("familySizeLabel").textContent = countLabel(familySize, "person", "people");
-  document.getElementById("spendLabel").textContent = formatPeso(weeklySpend);
-
-  // Illustrative assumptions, stated in the UI: 18% of grocery spend is lost
-  // to expired food and 48 kg of avoidable waste per person per year.
-  const savings = Math.round(weeklySpend * 52 * 0.18);
-  const wasteKg = familySize * 48;
-
-  document.getElementById("annualSavingsVal").textContent = formatPeso(savings);
-  document.getElementById("wasteDivertedVal").textContent = `${wasteKg} kg`;
-}
-
-function formatPeso(value) {
-  return "₱" + value.toLocaleString("en-PH");
-}
-
-/* ---------- Toasts ---------- */
-
-function showToast(message, { canUndo = false } = {}) {
-  const region = document.getElementById("toastContainer");
-  if (!region) return;
-
-  const toast = document.createElement("div");
-  toast.className = "toast";
-
-  const text = document.createElement("span");
-  text.textContent = message;
-  toast.appendChild(text);
-
-  let timer = null;
-  const dismiss = () => {
-    clearTimeout(timer);
-    toast.dataset.leaving = "true";
-    setTimeout(() => toast.remove(), 220);
-  };
-
-  if (canUndo) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.textContent = "Undo";
-    button.onclick = () => {
-      undo();
-      dismiss();
-    };
-    toast.appendChild(button);
-  }
-
-  region.appendChild(toast);
-  timer = setTimeout(dismiss, canUndo ? 6000 : 3200);
-}
-
-/* ---------- Demo sign-in (browser only, no server) ---------- */
-
-function openAuthDialog() {
-  const dialog = document.getElementById("authDialog");
-  if (dialog && !dialog.open) dialog.showModal();
-}
-
-function closeAuthDialog() {
-  const dialog = document.getElementById("authDialog");
-  if (dialog && dialog.open) dialog.close();
-}
-
-function handleAuthSubmit(e) {
-  e.preventDefault();
-  const email = document.getElementById("authEmailInput").value.trim();
-  if (!email) return;
-  currentAuthUser = { email, name: email.split("@")[0] };
-  localStorage.setItem(AUTH_KEY, JSON.stringify(currentAuthUser));
-  e.target.reset();
-  closeAuthDialog();
-  renderAuthState();
-  showToast(`Signed in as ${currentAuthUser.name} on this device`);
-}
-
-function handleSignOut() {
-  currentAuthUser = null;
-  localStorage.removeItem(AUTH_KEY);
-  renderAuthState();
-  showToast("Signed out");
-}
-
-function renderAuthState() {
-  const box = document.getElementById("authContainer");
-  if (!box) return;
-
-  if (currentAuthUser) {
-    const initial = escapeHtml(currentAuthUser.email.charAt(0).toUpperCase());
-    box.innerHTML = `
-      <div class="auth-profile">
-        <span class="avatar" aria-hidden="true">${initial}</span>
-        <span class="auth-email">${escapeHtml(currentAuthUser.email)}</span>
-        <button type="button" class="btn btn-quiet btn-sm" onclick="handleSignOut()">Sign out</button>
-      </div>`;
-  } else {
-    box.innerHTML = `<button type="button" class="btn btn-secondary btn-sm" onclick="openAuthDialog()">Sign in</button>`;
-  }
-}
-
-/* ---------- Colour theme (per device) ---------- */
-
-function applyTheme(value) {
-  const root = document.documentElement;
-  const explicit = value === "light" || value === "dark";
-  if (explicit) root.dataset.theme = value;
-  else delete root.dataset.theme;
-  syncThemeControl();
-}
-
-/* Keeps the header control in step with whatever theme the page is showing. */
-function syncThemeControl() {
-  const current = document.documentElement.dataset.theme || "system";
-  document.querySelectorAll("#themeToggle button").forEach((button) => {
-    button.setAttribute("aria-pressed", String(button.dataset.themeValue === current));
-  });
-}
-
-function setTheme(value) {
-  if (value === "light" || value === "dark") localStorage.setItem(THEME_KEY, value);
-  else localStorage.removeItem(THEME_KEY);
-  applyTheme(value);
-}
-
-/* ---------- Helpers ---------- */
-
-function categoryLabel(category) {
-  return CATEGORIES[category] || capitalize(String(category));
-}
-
-function capitalize(str) {
-  return str.charAt(0).toUpperCase() + str.slice(1);
-}
-
-function escapeHtml(str) {
-  return String(str).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
-}
-
-/* ---------- Init ---------- */
-
-document.addEventListener("DOMContentLoaded", () => {
-  setDefaultDate();
-
-  const dialog = document.getElementById("authDialog");
-  if (dialog) {
-    dialog.addEventListener("click", (e) => {
-      if (e.target === dialog) dialog.close();
-    });
-  }
-
-  syncThemeControl();
-  renderAuthState();
-  renderAll();
-  updateCalculator();
-});
+    <script src="js/index.js"></script>
+  </body>
+</html>
